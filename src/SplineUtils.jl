@@ -1,14 +1,19 @@
 module SplineUtils
+using AutomotiveDrivingModels
+using NearestNeighbors
+
+import PyPlot
 
 export
     ClosedB_Spline,
     B_SplineDerivative,
     ResampleSplineEven,
+    GenSplineRoadway,
     PlotSplineRoadway
 
-
+    
 """
-Computes the coefficients of a B-spline of degree "degree" from the control points "Pts", and 
+Computes the coefficients of a B-spline of degree "degree" from the control points "Pts", and
 samples "L_tt" points from that spline
 """
 function ClosedB_Spline(Pts, degree, L_tt) # returns spline and derivative of spline
@@ -16,13 +21,13 @@ function ClosedB_Spline(Pts, degree, L_tt) # returns spline and derivative of sp
     p = k - 1 # degree of derivative
     n = size(Pts,2) # number of control points
     m = n + k + 1; # number of knots in T
-    
+
     #knots
     T = 0.5*ones(m,1)
     T[1:k] = 0
     T[(k+1):end-(k)] = linspace(0,1,m-2*k)
     T[end-(k):end] = 1.0
-    
+
     tt = linspace(0,1,L_tt)
     rx = zeros(size(tt))
     ry = zeros(size(tt))
@@ -37,7 +42,7 @@ function ClosedB_Spline(Pts, degree, L_tt) # returns spline and derivative of sp
             end
         end
     end
-    
+
     N = Dict()
     for j = 1:size(tt)[1]
         t = tt[j]
@@ -50,10 +55,10 @@ function ClosedB_Spline(Pts, degree, L_tt) # returns spline and derivative of sp
         rx[j] = (Pts[1,:]'*N[k+1])[1]
         ry[j] = (Pts[2,:]'*N[k+1])[1]
     end
-    
+
     rx[end] = Pts[1,end]
-    ry[end] = Pts[2,end] 
-    
+    ry[end] = Pts[2,end]
+
     return T, tt, rx, ry
 end
 
@@ -69,7 +74,7 @@ function B_SplineDerivative(T, # knots
     p = k - 1 # degree of derivative
     n = size(Pts,2) # number of control points
     m = n + k + 1; # number of knots in T
-    
+
     invd = Dict() # inverse denominator (to deal with zero denominators)
     for i = 1:k+1
         invd[i] = T[(i+1):end] - T[1:(end-(i))]
@@ -80,15 +85,15 @@ function B_SplineDerivative(T, # knots
             end
         end
     end
-    
+
     Q = zeros(size(Pts[:,1:end-1]))
     ṙx = zeros(size(tt)) # derivatives
     ṙy = zeros(size(tt)) # derivatives
-    
+
     # Derivative
     Q[1,:] = p*invd[1][p+1:end-p].*(Pts[1,2:end] - Pts[1,1:end-1])
     Q[2,:] = p*invd[1][p+1:end-p].*(Pts[2,2:end] - Pts[2,1:end-1])
-    
+
     N = Dict()
     for j = 1:size(tt)[1]
         t = tt[j]
@@ -98,16 +103,16 @@ function B_SplineDerivative(T, # knots
                 N[i] = (t - T[1:end-i]) .* (invd[i-1].*N[i-1])[1:end-1] + (T[i+1:end] - t) .*(invd[i-1].*N[i-1])[2:end]
             end
         end
-        
+
         ṙx[j] = (Q[1,:]'*N[k][2:end-1])[1] # derivatives
         ṙy[j] = (Q[2,:]'*N[k][2:end-1])[1] # derivatives
     end
-    
+
     ṙx[1] = ṙx[2]
     ṙx[end] = ṙx[end-1]
     ṙy[1] = ṙy[2]
     ṙy[end] = ṙy[end-1]
-    
+
     return ṙx, ṙy
 end
 
@@ -122,7 +127,7 @@ function ResampleSplineEven(rx,ry,θ,s,k,num_samples)
     sP = zeros(num_samples)
     θP = zeros(num_samples)
     kP = zeros(num_samples)
-    
+
     xP[1] = rx[1]
     # xP[end] = rx[1]
     yP[1] = ry[1]
@@ -148,7 +153,7 @@ function ResampleSplineEven(rx,ry,θ,s,k,num_samples)
             j += 1
         end
     end
-    
+
     return xP, yP, θP, sP, kP
 end
 
@@ -157,6 +162,7 @@ end
 Generates a roadway based on spline points (x,y,θ,s,k)
 """
 function GenSplineRoadway(x,y,θ,s,k,lane_width)
+    tree = KDTree([x';y'])
     nlanes = 1
     seg1 = RoadSegment(1, Array(Lane, nlanes))
     tag1=LaneTag(1,1)
@@ -178,8 +184,8 @@ function GenSplineRoadway(x,y,θ,s,k,lane_width)
                                  )
     roadway = Roadway()
     push!(roadway.segments, seg1)
-    
-    return roadway
+
+    return roadway, tree
 end
 
 #################################################
@@ -189,12 +195,12 @@ Plots spline roadway points
 function PlotSplineRoadway(x,y,θ,lane_width)
     perp_lines1 = zeros(2,length(x))
     perp_lines2 = zeros(2,length(x))
-    
+
     perp_lines1[1,:] = x + (lane_width/2.0)*sin(θ)
     perp_lines1[2,:] = y - (lane_width/2.0)*cos(θ)
     perp_lines2[1,:] = x - (lane_width/2.0)*sin(θ)
     perp_lines2[2,:] = y + (lane_width/2.0)*cos(θ)
-    
+
     PyPlot.figure()
     PyPlot.scatter(x,y)
     PyPlot.plot(x,y)
