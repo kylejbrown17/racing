@@ -11,7 +11,7 @@ export
     GenSplineRoadway,
     PlotSplineRoadway
 
-    
+
 """
 Computes the coefficients of a B-spline of degree "degree" from the control points "Pts", and
 samples "L_tt" points from that spline
