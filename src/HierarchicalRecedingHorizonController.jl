@@ -13,6 +13,7 @@ export
     GenerateMotionMap,
     screenCollision,
     MotionPrimitives,
+    TailgateAvoidance,
     MotionPrimitivesAcceleration,
     QuadraticMask,
     CurveDist,
@@ -1081,62 +1082,6 @@ function calculateObjective(car_ID,s₀,s,t,ϕ,T_MAX;ϕ_MAX=Float64(π),s_factor
     objective = 1+s_cost+t_cost+ϕ_cost+tϕ_cost
     return objective
 end
-# function calculateObjective(hrhc, scene, roadway, tree, s, t, ϕ, obstacleMap, k_level, h; f_ϕ=0.0, f_t=0.1, f_tϕ=3.0)
-#     """
-#     Calculates the value of the optimization objective function for every state
-#       in hrhc.successor_states
-#     """
-#     state = scene.vehicles[hrhc.car_ID].state
-#     dS = s - state.posF.s
-#     dS = dS / maximum(dS) # normalize
-#     ϕMAX = Float64(π)/2
-#
-#     # penalize large t (proximity to edge of track)
-#     cost_t = (exp(((10-h+f_t)*abs(t/hrhc.T_MAX).^2)) - 1)/exp(f_t) + Inf*(t.>hrhc.T_MAX)
-#     # penalize large ϕ (steering away from forward direction on the track)
-#     cost_ϕ = (exp(((10-h+f_ϕ)*abs(ϕ/ϕMAX).^2)) - 1)/exp(f_ϕ)
-#     # penalize when t and ϕ have the same sign
-#     A = [1 1; 1 1]
-#     cost_x = (((ϕ/ϕMAX)*A[1,1] + (t/hrhc.T_MAX)*A[2,1]).*(ϕ/ϕMAX) + ((ϕ/ϕMAX)*A[1,2] + (t/hrhc.T_MAX)*A[2,2]).*(t/hrhc.T_MAX))/2
-#     cost_tϕ = (exp(f_tϕ*cost_x) - 1)/exp(1)
-#     eligibility_mask = ((hrhc.successor_states[:,:,1] .== state.posG.x).*(hrhc.successor_states[:,:,2] .== state.posG.y))
-#
-#     # obstacles
-#     collisionCost = zeros(size(cost_t))
-#     threshold_dist = hrhc.car_length*4 # must be at least this close before we care to calculate collision cost
-#     if k_level >= 1
-#         for (id,car) in obstacleMap[k_level - 1]
-#             if id != hrhc.car_ID
-#                 state = scene.vehicles[hrhc.car_ID].state
-#                 state2 = scene.vehicles[id].state
-#                 diff = state.posG - state2.posG
-#                 s1,_,_ = kdProject(state.posG.x,state.posG.y,state.posG.θ,tree,roadway,hrhc)
-#                 s2,_,_ = kdProject(state2.posG.x,state2.posG.y,state2.posG.θ,tree,roadway,hrhc)
-#                 if (norm([diff.x, diff.y]) < threshold_dist) && (s1 <= s2) # don't care if opponent is behind us
-#                     pos = VecSE2(car[h,1:3]) # x,y,θ of opponent at time step h
-#                     ΔX = hrhc.successor_states[:,:,1] - pos.x # Δx, with opponent at origin
-#                     ΔY = hrhc.successor_states[:,:,2] - pos.y # Δy with opponent at origin
-#                     Δθ = hrhc.successor_states[:,:,3] - pos.θ # Δθ with opponent at origin
-#                     pts = [hrhc.car_length hrhc.car_length -hrhc.car_length -hrhc.car_length 0;
-#                         -hrhc.car_width hrhc.car_width hrhc.car_width -hrhc.car_width 0]/1.8
-#                     pX = zeros(size(pts,2),size(hrhc.successor_states,1),size(hrhc.successor_states,2))
-#                     pY = zeros(size(pX))
-#                     for i in 1:size(pts,2)
-#                         pX[i,:,:] = pts[1,i]*cos(Δθ) - pts[2,i]*sin(Δθ) + ΔX
-#                         pY[i,:,:] = pts[1,i]*sin(Δθ) + pts[2,i].*cos(Δθ) + ΔY
-#                     end
-#
-#                     collisionFlag = (maximum((abs(pX) .< hrhc.car_length/1.0),1)[1,:,:]).*(maximum((abs(pY) .< hrhc.car_width/1.9),1)[1,:,:])
-#                     collisionCost = .001+(collisionFlag .>= 1)./(minimum(abs(pX),1)[1,:,:].*minimum(abs(pY),1)[1,:,:])
-#                     # collisionCost = Inf.*collisionFlag
-#                 end
-#             end
-#         end
-#     end
-#
-#     objective = cost_t + cost_ϕ + cost_tϕ + 1 - dS + collisionCost + Inf * eligibility_mask
-#     return objective
-# end
 function AutomotiveDrivingModels.observe!(hrhc::mapHRHC, scene::Scene, roadway::Roadway, egoid::Int, tree::KDTree, obstacleMap, k_level)
     """
     Observe the current environment and select optimal action to apply at next
