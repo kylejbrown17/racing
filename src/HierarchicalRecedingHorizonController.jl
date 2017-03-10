@@ -332,7 +332,7 @@ function kdProject(x,y,θ,tree,roadway,hrhc)
     pθ = curve[idxA].pos.θ + idx_t*(curve[idxB].pos.θ - curve[idxA].pos.θ)
 
     s = curve[idxA].s + idx_t*hrhc.Δs
-    t = -norm(vec2 - idx_t*vec1)
+    t = norm(vec2 - idx_t*vec1)*sign(sum(cross(vec1, vec2)))
     ϕ = wrap_to_π(θ - pθ)
 
     s,t,ϕ,idxA
@@ -810,6 +810,7 @@ type mapHRHC <: DriverModel{NextState, IntegratedContinuous}
     δ_cmd::Int # index of δ in δ_cmds
     #car parameters with bicycle geometry model
     car_length::Float64 # wheel base
+    wheel_base::Float64
     car_width::Float64
     a_step::Float64 # max acceleration (m/s)
     μ::Float64 # friction coefficient
@@ -858,6 +859,7 @@ type mapHRHC <: DriverModel{NextState, IntegratedContinuous}
 
         hrhc.car_ID = car_ID
         hrhc.car_length=car_length
+        hrhc.wheel_base=wheel_base
         hrhc.car_width=car_width
         hrhc.h=h
         hrhc.Δt=Δt
