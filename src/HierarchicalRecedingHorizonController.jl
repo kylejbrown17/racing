@@ -1,303 +1,38 @@
-module HierarchicalRecedingHorizonController
-using AutomotiveDrivingModels
-using NearestNeighbors
+# using AutomotiveDrivingModels
+# using NearestNeighbors
 
-import AutomotiveDrivingModels: get_actions!, observe!, action_context, get_name
-import Base.rand
-import PyPlot
+# import AutomotiveDrivingModels: get_actions!, observe!, action_context, get_name
+# import Base.rand
+# import PyPlot
 
-export
-    HRHC,
-    accelHRHC,
-    mapHRHC,
-    GenerateMotionMap,
-    screenCollision,
-    MotionPrimitives,
-    TailgateAvoidance,
-    MotionPrimitivesAcceleration,
-    QuadraticMask,
-    CurveDist,
-    wrap_to_π,
-    getLegalMoves!,
-    getSuccessorStates!,
-    getSuccessorStates,
-    loopProjectionKD,
-    kdProject,
-    computeTrajectory,
-    screenTrajectory,
-    checkCollision,
-    generateObstacleMap,
-    updateObstacleMap!,
-    getObstacleCoords,
-    calculateObjective,
-    plot_stϕ,
-    plotHRHCInfo,
-    plotObjectiveHorizon,
-    plotSplineRoadway
+# export
+#     HRHC,
+#     curveDist,
+#     wrap_to_π,
+#     kdProject,
+#     generateObstacleMap,
+#     updateObstacleMap!,
+#     generateMotionMap,
+#     screenCollision,
+#     tailgateAvoidance,
+#     getSuccessorStates,
+#     loopProjectionKD,
+#     computeTrajectory,
+#     screenTrajectory,
+#     checkCollision,
+#     calculateObjective,
+#     plot_stϕ,
+#     plotHRHCInfo,
+#     plotObjectiveHorizon,
+#     plotSplineRoadway
 
-type HRHC <: DriverModel{NextState, IntegratedContinuous}
-    action_context::IntegratedContinuous
-    v_cmds # possible velocity commands
-    δ_cmds # possible δ_cmds
-    ΔXYθ # state changes associated with cmd = (v_command, δ_command)
-    legal_ΔXYθ # reachable from current v, δ
-    legal_v # reachable from current v, δ
-    legal_δ # reachable from current v, δ
-    v_idx_low::Int # index lowest reachable v_command
-    v_idx_high::Int # index highest reachable v_command
-    δ_idx_low::Int # index lowest reachable δ_command
-    δ_idx_high::Int # index highest reachable δ_command
-    successor_states # reachable next_states
-
-    #car parameters with bicycle geometry model
-    car_length::Float64 # wheel base
-    car_width::Float64
-    car_ID::Int
-
-    # current v, current δ
-    v::Float64
-    δ::Float64
-    curve_ind::Int
-    Δs::Float64
-
-    # planning horizon
-    h::Int
-    Δt::Float64
-
-    # logit level
-    k::Int
-
-    # reachable range of V and δ within a single time step
-    ΔV₊::Float64
-    ΔV₋::Float64
-    Δδ::Float64
-
-    V_MIN::Float64
-    V_MAX::Float64
-    V_STEPS::Int
-    δ_MAX::Float64
-    δ_MIN::Float64
-    δ_STEPS::Int
-
-    # maximum deviation from center of track (if |t| > T_MAX, car is out of bounds)
-    T_MAX::Float64
-
-    # Action = Next State
-    action::NextState
-
-    function HRHC(car_ID::Int,roadway,context;
-        car_length::Float64=4.8,
-        car_width::Float64=2.5,
-        v::Float64=0.0,
-        δ::Float64=0.0,
-        h::Int=10,
-        Δt::Float64=1.0/24,
-        ΔV₊::Float64=1.55,
-        ΔV₋::Float64=3.05,
-        Δδ::Float64=Float64(π)/12,
-        V_MIN::Float64=0.0,
-        V_MAX::Float64=100.0,
-        V_STEPS::Int=101,
-        δ_MAX::Float64=Float64(π)/8,
-        δ_MIN::Float64=-Float64(π)/8,
-        δ_STEPS::Int=16,
-        k::Int=1
-        )
-
-        hrhc = new()
-
-        hrhc.V_MIN=V_MIN
-        hrhc.V_MAX=V_MAX
-        hrhc.V_STEPS=V_STEPS
-        hrhc.δ_MAX=δ_MAX
-        hrhc.δ_MIN=δ_MIN
-        hrhc.δ_STEPS=δ_STEPS
-        hrhc.T_MAX=(roadway.segments[1].lanes[1].width - car_width)/2.0
-
-        hrhc.car_ID = car_ID
-        hrhc.car_length=car_length
-        hrhc.car_width=car_width
-        hrhc.h=h
-        hrhc.Δt=Δt
-        hrhc.ΔV₊=ΔV₊
-        hrhc.ΔV₋=ΔV₋
-        hrhc.Δδ=Δδ
-
-        hrhc.k=k
-
-        hrhc.v_cmds, hrhc.δ_cmds, hrhc.ΔXYθ = MotionPrimitives(car_length,car_width,h,Δt,V_MIN,V_MAX,V_STEPS,δ_MAX,δ_MIN,δ_STEPS)
-        QuadraticMask!(hrhc.ΔXYθ)
-
-        hrhc.v=v
-        hrhc.δ=δ
-        hrhc.curve_ind=1
-        hrhc.Δs=roadway.segments[1].lanes[1].curve[2].s-roadway.segments[1].lanes[1].curve[1].s
-        hrhc.action_context=context
-        hrhc.action = NextState(VehicleState(VecSE2(0,0,0),0.0))
-
-        hrhc
-    end
-end
 # utility functions
-function MotionPrimitives(car_length,car_width,h,Δt,v_min,v_max,v_steps,δ_max,δ_min,δ_steps)
-    """
-    Return a library of motion primitives (arcs of constant radius) representing short paths that the car can follow.
-    """
-    # 3D array to store motion_primitives
-    motion_primitives = zeros(v_steps,2*δ_steps+1,2) # v: 0,...,99; δ: -45:45, (arc length, +/- radius)
-
-    v = linspace(v_min,v_max,v_steps)*ones(1,2*δ_steps+1)
-    δ = (linspace(-δ_max,δ_max,δ_steps*2+1)*ones(1,v_steps))' # steering angle
-
-    motion_primitives[:,:,1] = v*Δt*h # arc length = velocity * time
-    motion_primitives[:,:,2] = car_length./sin(δ) # radius of curvature (+ or -)
-    motion_primitives[:,1+δ_steps,2] = Inf; # radius of curvature is infinite if steering angle = 0
-
-    destination_primitives = zeros(v_steps,2*δ_steps+1,h,3) # lookup table defining car's location at each of next h time steps
-
-    for i = 1:h
-        # angle = 2π * arc_length / r
-        dθ = v*Δt*i ./ motion_primitives[:,:,2]
-
-        # dX = abs(radius) * sin(angle)
-        destination_primitives[:,:,i,1] = abs(motion_primitives[:,:,2]) .* sin(abs(dθ))
-        destination_primitives[:,1+δ_steps,i,1] = v[:,1+δ_steps]*Δt*i # centerline
-
-        # dY = radius * (1 - cos(angle))
-        destination_primitives[:,:,i,2] = motion_primitives[:,:,2].*(1 - cos(dθ))
-        destination_primitives[:,1+δ_steps,i,2] = 0 # centerline
-
-        destination_primitives[:,:,i,3] = dθ
-    end
-
-    # motion_primitives[v, δ, i,j] = s (arc_length), r (radius of curvature)
-    # destination_primitives[v, δ, h, 1=Δx,2=Δy,3=Δθ]= changes in x, y and θ after h time steps
-    return v, δ, destination_primitives
-end
-function QuadraticMask!(library)
-  """ quadratic logical mask (simplified dynamic model) """
-    A = size(library)[1]
-    B = size(library)[2]
-    X = linspace(0,100,A)*ones(1,B)
-    Y = ones(A,1)*linspace(-20,20,B)'
-    f = X.^2 + 24*(Y.^2 - 10^2)
-    mask = 1.0*(f.<10000)
-
-    #p = PyPlot.scatter(X,Y.*mask)
-    #PyPlot.xlabel("velocity")
-    #PyPlot.ylabel("steering angle")
-    #PyPlot.show()
-
-    if length(size(library)) == 3
-        for i in 1 : size(library)[3]
-            library[:,:,i] = library[:,:,i] .* mask
-        end
-    end
-    if length(size(library)) == 4
-        for i in 1 : size(library)[3]
-            for j in 1 : size(library)[4]
-                library[:,:,i,j] = library[:,:,i,j] .* mask
-            end
-        end
-    end
-end
-function CurveDist(pt1::CurvePt, pt2::CurvePt)
+function curveDist(pt1::CurvePt, pt2::CurvePt)
     d = sqrt((pt1.pos.x - pt2.pos.x)^2 + (pt1.pos.y - pt2.pos.y)^2)
 end
 function wrap_to_π(θ)
     θ = θ - div(θ,2*Float64(π))*(2*Float64(π))
     θ = θ + (θ .< -π).*(2*Float64(π)) - (θ .> π).*(2*Float64(π))
-end
-
-# HRHC functions
-function getLegalMoves!(hrhc::HRHC, scene; h=hrhc.h)
-    v_norm = scene.vehicles[hrhc.car_ID].state.v / hrhc.V_MAX
-
-    # Restrict search space to reachable states
-    hrhc.v_idx_low = max(1, round(Int,(v_norm - hrhc.ΔV₋/hrhc.V_MAX)*hrhc.V_STEPS)) # index of lowest reachable v in the next time step
-    hrhc.v_idx_high = min(hrhc.V_STEPS, 1+round(Int, (v_norm + hrhc.ΔV₊/hrhc.V_MAX)*hrhc.V_STEPS)) # highest reachable v in the next time step
-
-    # Restrict search space to reachable states
-    hrhc.δ_idx_low = max(1, (hrhc.δ_STEPS+1) + round(Int,((hrhc.δ - hrhc.Δδ)/(hrhc.δ_MAX - hrhc.δ_MIN))*(2*hrhc.δ_STEPS+1)))
-    hrhc.δ_idx_high = min((2*hrhc.δ_STEPS+1), (hrhc.δ_STEPS+1) + round(Int,((hrhc.δ + hrhc.Δδ)/(hrhc.δ_MAX - hrhc.δ_MIN))*(2*hrhc.δ_STEPS+1)))
-
-    # legal_moves = motion_primitives[v_idx_low:v_idx_high,δ_idx_low:δ_idx_high,:]
-    hrhc.legal_ΔXYθ = hrhc.ΔXYθ[hrhc.v_idx_low:hrhc.v_idx_high,hrhc.δ_idx_low:hrhc.δ_idx_high,h,:] # ΔX, ΔY, Δθ
-    hrhc.legal_v = hrhc.v_cmds[hrhc.v_idx_low:hrhc.v_idx_high,hrhc.δ_idx_low:hrhc.δ_idx_high]
-    hrhc.legal_δ = hrhc.δ_cmds[hrhc.v_idx_low:hrhc.v_idx_high,hrhc.δ_idx_low:hrhc.δ_idx_high]
-
-    return
-end
-function getSuccessorStates!(hrhc::HRHC, scene::Scene)
-    """ gets legal successor_states from motion primitives library """
-    pos = scene.vehicles[hrhc.car_ID].state.posG # global x,y,z of car
-
-    ΔX = hrhc.legal_ΔXYθ[:,:,1] * cos(pos.θ) + hrhc.legal_ΔXYθ[:,:,2] * -sin(pos.θ)
-    ΔY = hrhc.legal_ΔXYθ[:,:,1] * sin(pos.θ) + hrhc.legal_ΔXYθ[:,:,2] * cos(pos.θ)
-    Δθ = hrhc.legal_ΔXYθ[:,:,3]
-
-    hrhc.successor_states = zeros(size(hrhc.legal_ΔXYθ))
-    hrhc.successor_states[:,:,1] = ΔX + pos.x
-    hrhc.successor_states[:,:,2] = ΔY + pos.y
-    hrhc.successor_states[:,:,3] = Δθ + pos.θ
-
-    return
-end
-function loopProjectionKD(hrhc,scene,roadway,tree)
-    """
-    projects all points in hrhc.successor_states to the kdtree representing
-    the spline points along the centerline of roadway
-    """
-    curve = roadway.segments[1].lanes[1].curve
-
-    s_grid = zeros(size(hrhc.successor_states,1),size(hrhc.successor_states,2))
-    t_grid = zeros(size(s_grid))
-    ϕ_grid = zeros(size(s_grid))
-    idx_grid = zeros(Int,size(s_grid))
-
-    pts = [reshape(hrhc.successor_states[:,:,1],size(hrhc.successor_states[:,:,1],1)*size(hrhc.successor_states[:,:,1],2),1)';
-    reshape(hrhc.successor_states[:,:,2],size(hrhc.successor_states[:,:,2],1)*size(hrhc.successor_states[:,:,2],2),1)']
-    idxs_list, _ = knn(tree,pts,1)
-    idxs=reshape(idxs_list,size(hrhc.successor_states[:,:,2],1),size(hrhc.successor_states[:,:,2],2))
-
-
-    for i in 1:size(s_grid,1)
-        for j in 1:size(s_grid,2)
-            idxA = idxs[i,j][1]-1
-            idxB = idxs[i,j][1]+1
-            if idxs[i,j][1] == length(curve)
-                idxB = 1 # wrap to the beginning of the curve
-            end
-            if idxs[i,j][1] == 1
-                idxA = length(curve) # wrap to the end of the curve
-            end
-            x = hrhc.successor_states[i,j,1]
-            y = hrhc.successor_states[i,j,2]
-            dA = sqrt(sum(([curve[idxA].pos.x, curve[idxA].pos.y]-[x,y]).^2))
-            dB = sqrt(sum(([curve[idxB].pos.x, curve[idxB].pos.y]-[x,y]).^2))
-            if dA < dB
-                idxB = idxs[i,j][1]
-            else
-                idxA = idxs[i,j][1]
-            end
-
-            # project
-            vec1 = [curve[idxB].pos.x - curve[idxA].pos.x, curve[idxB].pos.y - curve[idxA].pos.y, 0]
-            vec2 = [x - curve[idxA].pos.x, y - curve[idxA].pos.y, 0]
-            idx_t = dot(vec2, vec1)/norm(vec1)^2
-
-            s_θ = curve[idxA].pos.θ + idx_t*(curve[idxB].pos.θ - curve[idxA].pos.θ)
-
-            s_grid[i,j] = curve[idxA].s + idx_t*hrhc.Δs
-            t_grid[i,j] = norm(vec2 - idx_t*vec1)*sign(sum(cross(vec1, vec2)))
-            ϕ_grid[i,j] = wrap_to_π(hrhc.successor_states[i,j,3] - s_θ)
-            idx_grid[i,j] = idxA
-        end
-    end
-    # account for wrap-around
-    s_grid[s_grid .< scene.vehicles[hrhc.car_ID].state.posF.s] += curve[end].s + hrhc.Δs
-
-    return s_grid, t_grid, ϕ_grid
 end
 function kdProject(x,y,θ,tree,roadway,hrhc)
     """
@@ -337,470 +72,9 @@ function kdProject(x,y,θ,tree,roadway,hrhc)
 
     s,t,ϕ,idxA
 end
-function computeTrajectory(hrhc::HRHC, scene, cmd_index; h=hrhc.h)
-    pos = scene.vehicles[hrhc.car_ID].state.posG
 
-    traj_ΔXYθ = hrhc.ΔXYθ[cmd_index[1],cmd_index[2],1:h,:]
-
-    ΔX = traj_ΔXYθ[:,1] * cos(pos.θ) + traj_ΔXYθ[:,2] * -sin(pos.θ)
-    ΔY = traj_ΔXYθ[:,1] * sin(pos.θ) + traj_ΔXYθ[:,2] * cos(pos.θ)
-    Δθ = traj_ΔXYθ[:,3]
-
-    trajectory = zeros(size(traj_ΔXYθ,1),size(traj_ΔXYθ,2)+2)
-    trajectory[:,1] = ΔX + pos.x
-    trajectory[:,2] = ΔY + pos.y
-    trajectory[:,3] = Δθ + pos.θ
-    trajectory[:,4] = hrhc.v_cmds[cmd_index[1],cmd_index[2]]
-    trajectory[:,5] = hrhc.δ_cmds[cmd_index[1],cmd_index[2]]
-
-    return trajectory
-end
-function screenTrajectory(trajectory, obstacleMap, scene, roadway, hrhc, tree, k_level)
-    out_of_bounds = false
-    collision_flag = false
-    # check out of bounds
-    for i in 1 : size(trajectory,1)
-        x = trajectory[i,1]
-        y = trajectory[i,2]
-        θ = trajectory[i,3]
-        s,t,ϕ = kdProject(x,y,θ,tree,roadway,hrhc)
-
-        if abs(t) > hrhc.T_MAX
-            out_of_bounds=true
-            return out_of_bounds
-        end
-    end
-    # check for collision
-    # threshold_dist = 4.0*hrhc.car_length
-    # if k_level >= 1
-    #     for (id,car) in obstacleMap[k_level - 1]
-    #         if id != hrhc.car_ID
-    #             state = scene.vehicles[hrhc.car_ID].state
-    #             state2 = scene.vehicles[id].state
-    #             diff = state.posG - state2.posG
-    #             s1,_,_ = kdProject(state.posG.x,state.posG.y,state.posG.θ,tree,roadway,hrhc)
-    #             s2,_,_ = kdProject(state2.posG.x,state2.posG.y,state2.posG.θ,tree,roadway,hrhc)
-    #             if (norm([diff.x, diff.y]) < threshold_dist) && (s1 <= s2) # check which car is ahead
-    #                 for i in 1: size(trajectory,1)
-    #                     egoCar = VecSE2(trajectory[i,1],trajectory[i,2],trajectory[i,3])
-    #                     car2 = VecSE2(car[i,1],car[i,2],car[i,3])
-    #                     collision_flag = checkCollision(scene,egoCar,car2,hrhc.car_ID,id)
-    #                     if collision_flag
-    #                         return collision_flag
-    #                     end
-    #                 end
-    #             end
-    #         end
-    #     end
-    # end
-
-    return out_of_bounds
-end
-function checkCollision(scene,car1::VecSE2,car2::VecSE2,id1,id2)
-    L1 = scene.vehicles[id1].def.length
-    w1 = scene.vehicles[id1].def.width
-    L2 = scene.vehicles[id2].def.length
-    w2 = scene.vehicles[id2].def.width
-    diff = car1 - car2
-    R = [cos(diff.θ) -sin(diff.θ); sin(diff.θ) cos(diff.θ)]
-    car2_pts = R*[L2 L2 -L2 -L2; -w2 w2 w2 -w2]/2.0 + [diff.x 0;0 diff.y]*ones(2,4)
-    collision_flag = (sum((abs(car2_pts[1,:]) .>= L1/2.0).*(abs(car2_pts[2,:]) .>= w1/2.0)) > 0)
-    return collision_flag
-end
-function generateObstacleMap(scene, models)
-    k = maximum([driver.k for (id, driver) in models])
-    n = length(scene)
-    h = maximum([driver.h for (id, driver) in models]) # h should be the same for all vehicles on the track
-    obstacleDict = Dict()
-    for level in 0:k
-        obstacleDict[level] = Dict()
-        for (id, driver) in models
-            obstacleDict[level][id] = zeros(h,5) # x,y,θ,v,δ
-        end
-    end
-
-    return obstacleDict
-end
-function updateObstacleMap!(obstacleMap, level, car_ID, trajectory)
-    obstacleMap[level][car_ID][1:size(trajectory,1),1:size(trajectory,2)] = trajectory
-end
-function getObstacleCoords(obstacleMap, level, car_ID, h)
-    return obstacleMap[level][car_ID][h,:]
-end
-function calculateObjective(hrhc, scene, roadway, tree, s, t, ϕ, obstacleMap, k_level, h; f_ϕ=0.0, f_t=0.1, f_tϕ=3.0)
-    """
-    Calculates the value of the optimization objective function for every state
-      in hrhc.successor_states
-    """
-    state = scene.vehicles[hrhc.car_ID].state
-    dS = s - state.posF.s
-    dS = dS / maximum(dS) # normalize
-    ϕMAX = Float64(π)/2
-
-    # penalize large t (proximity to edge of track)
-    cost_t = (exp(((10-h+f_t)*abs(t/hrhc.T_MAX).^2)) )/exp(f_t) + Inf*(t.>hrhc.T_MAX)
-    # penalize large ϕ (steering away from forward direction on the track)
-    cost_ϕ = (exp(((10-h+f_ϕ)*abs(ϕ/ϕMAX).^2)) )/exp(f_ϕ)
-    # penalize when t and ϕ have the same sign
-    A = [1 1; 1 1]
-    cost_x = (((ϕ/ϕMAX)*A[1,1] + (t/hrhc.T_MAX)*A[2,1]).*(ϕ/ϕMAX) + ((ϕ/ϕMAX)*A[1,2] + (t/hrhc.T_MAX)*A[2,2]).*(t/hrhc.T_MAX))/2
-    cost_tϕ = (exp(f_tϕ*cost_x) )/exp(1)
-    eligibility_mask = ((hrhc.successor_states[:,:,1] .== state.posG.x).*(hrhc.successor_states[:,:,2] .== state.posG.y))
-
-    # obstacles
-    collisionCost = zeros(size(cost_t))
-    threshold_dist = hrhc.car_length*4 # must be at least this close before we care to calculate collision cost
-    if k_level >= 1
-        for (id,car) in obstacleMap[k_level - 1]
-            if id != hrhc.car_ID
-                state = scene.vehicles[hrhc.car_ID].state
-                state2 = scene.vehicles[id].state
-                diff = state.posG - state2.posG
-                s1,_,_ = kdProject(state.posG.x,state.posG.y,state.posG.θ,tree,roadway,hrhc)
-                s2,_,_ = kdProject(state2.posG.x,state2.posG.y,state2.posG.θ,tree,roadway,hrhc)
-                if (norm([diff.x, diff.y]) < threshold_dist) && (s1 <= s2) # don't care if opponent is behind us
-                    pos = VecSE2(car[h,1:3]) # x,y,θ of opponent at time step h
-                    ΔX = hrhc.successor_states[:,:,1] - pos.x # Δx, with opponent at origin
-                    ΔY = hrhc.successor_states[:,:,2] - pos.y # Δy with opponent at origin
-                    Δθ = hrhc.successor_states[:,:,3] - pos.θ # Δθ with opponent at origin
-                    pts = [hrhc.car_length hrhc.car_length -hrhc.car_length -hrhc.car_length 0;
-                        -hrhc.car_width hrhc.car_width hrhc.car_width -hrhc.car_width 0]/1.8
-                    pX = zeros(size(pts,2),size(hrhc.successor_states,1),size(hrhc.successor_states,2))
-                    pY = zeros(size(pX))
-                    for i in 1:size(pts,2)
-                        pX[i,:,:] = pts[1,i]*cos(Δθ) - pts[2,i]*sin(Δθ) + ΔX
-                        pY[i,:,:] = pts[1,i]*sin(Δθ) + pts[2,i].*cos(Δθ) + ΔY
-                    end
-
-                    collisionFlag = (maximum((abs(pX) .< hrhc.car_length/1.0),1)[1,:,:]).*(maximum((abs(pY) .< hrhc.car_width/1.9),1)[1,:,:])
-                    collisionCost = .001+(collisionFlag .>= 1)./(minimum(abs(pX),1)[1,:,:].*minimum(abs(pY),1)[1,:,:])
-                    # collisionCost = Inf.*collisionFlag
-                end
-            end
-        end
-    end
-
-    objective = cost_t + cost_ϕ + cost_tϕ + 1 - dS + collisionCost + Inf * eligibility_mask
-    return objective
-end
-function AutomotiveDrivingModels.observe!(hrhc::HRHC, scene::Scene, roadway::Roadway, egoid::Int, tree::KDTree, obstacleMap, k_level)
-    """
-    Observe the current environment and select optimal action to apply at next
-    time step
-    """
-    if k_level > hrhc.k
-        return
-    end
-    state = scene.vehicles[hrhc.car_ID].state
-    hrhc.curve_ind = state.posF.roadind.ind.i
-    v = state.v # current v
-    hrhc.v = v
-
-    trajectory = zeros(hrhc.h,5)
-    action_selected = false
-    abs_cmd = (1,1)
-
-    i = 0
-    for i in 0:(hrhc.h-1)
-        if action_selected
-            break # out of for loop
-        end
-
-        # get legal (reachable from current v, δ) actions
-        getLegalMoves!(hrhc, scene, h=hrhc.h-i)
-
-        # calculate successor states
-        getSuccessorStates!(hrhc, scene)
-
-        # project successor states onto track
-        s,t,ϕ = loopProjectionKD(hrhc, scene, roadway, tree)
-
-        # optimization objective
-        objective = calculateObjective(hrhc, scene, roadway, tree, s, t, ϕ, obstacleMap, k_level, hrhc.h-i,f_t=0.0)
-
-        while (action_selected==false) && (minimum(objective) != Inf)
-            index = indmin(objective) # find get a better method of optimizing this
-            cmd = ind2sub(s, index)
-            abs_cmd = (cmd[1]+hrhc.v_idx_low-1, cmd[2]+hrhc.δ_idx_low-1)
-
-            # compute full trajectory up to horizon
-            trajectory = computeTrajectory(hrhc, scene, abs_cmd, h=hrhc.h-i)
-
-            # screen trajectory for collisions / validity
-            out_of_bounds = screenTrajectory(trajectory, obstacleMap, scene, roadway, hrhc, tree, k_level)
-
-            if out_of_bounds
-                objective[index] = Inf
-            else
-                action_selected=true
-                updateObstacleMap!(obstacleMap, k_level, hrhc.car_ID, trajectory)
-            end
-        end
-    end
-
-    hrhc.δ = hrhc.δ_cmds[abs_cmd[1], abs_cmd[2]]
-    hrhc.v = hrhc.v_cmds[abs_cmd[1], abs_cmd[2]]
-
-    next_state = VehicleState(VecSE2(trajectory[1,1:3]),roadway,hrhc.v)
-    hrhc.action = NextState(next_state) # action
-end
-# AutomotiveDrivingModels.observe!(hrhc::HRHC, scene::Scene, roadway::Roadway, egoid::Int, tree::KDTree, obstacleMap, k_level) = observe!
-AutomotiveDrivingModels.get_name(::HRHC) = "HRHC"
-AutomotiveDrivingModels.action_context(driver::HRHC) = driver.action_context # AutomotiveDrivingModels.action_context
-Base.rand(hrhc::HRHC) = hrhc.action
-
-
-##################### Constant Acceleration-Based HRHC ########################
-type accelHRHC <: DriverModel{NextState, IntegratedContinuous}
-    action_context::IntegratedContinuous
-    v_cmds # possible velocity commands
-    δ_cmds # possible δ_cmds
-    ΔXYθ # state changes associated with cmd = (v_command, δ_command) - this is the motion map
-    eligibility_mask # logical array with zeros at locations of tire force saturation
-    v_idx::Int # index of v in v_cmds
-    δ_idx::Int # index of δ in δ_cmds
-    successor_states # reachable next_states
-
-    #car parameters with bicycle geometry model
-    car_length::Float64 # wheel base
-    car_width::Float64
-    car_ID::Int
-
-    # current v, current δ
-    v::Float64
-    δ::Float64
-    curve_ind::Int
-    Δs::Float64
-
-    # planning horizon
-    h::Int
-    Δt::Float64
-
-    # logit level
-    k::Int
-
-    V_MIN::Float64
-    V_MAX::Float64
-
-    a_max::Float64 # max acceleration (m/s)
-    μ::Float64 # friction coefficient
-
-    # maximum deviation from center of track (if |t| > T_MAX, car is out of bounds)
-    T_MAX::Float64
-
-    # Action = Next State
-    action::NextState
-
-    function accelHRHC(car_ID::Int,roadway,context;
-        car_length::Float64=4.8,
-        car_width::Float64=2.5,
-        v::Float64=0.0,
-        δ::Float64=0.0,
-        h::Int=10,
-        Δt::Float64=1.0/24,
-        ΔV₊::Float64=1.55,
-        ΔV₋::Float64=3.05,
-        Δδ::Float64=Float64(π)/12,
-        V_MIN::Float64=0.0,
-        V_MAX::Float64=100.0,
-        a_max::Float64=10.0,
-        μ::Float64=20.0,
-        g::Float64=9.81,
-        δ_MAX::Float64=Float64(π)/8,
-        δ_MIN::Float64=-Float64(π)/8,
-        δ_STEP::Float64=Float64(π)/64,
-        k::Int=1
-        )
-
-        hrhc = new()
-
-        hrhc.V_MIN=V_MIN
-        hrhc.V_MAX=V_MAX
-
-        hrhc.T_MAX=(roadway.segments[1].lanes[1].width - car_width)/2.0
-
-        hrhc.car_ID = car_ID
-        hrhc.car_length=car_length
-        hrhc.car_width=car_width
-        hrhc.h=h
-        hrhc.Δt=Δt
-        hrhc.a_max=a_max
-        hrhc.μ=μ
-
-        hrhc.k=k
-        v_step = a_max*Δt
-
-        hrhc.v_cmds, hrhc.δ_cmds, _, hrhc.ΔXYθ, hrhc.eligibility_mask  = MotionPrimitivesAcceleration(car_length,h,Δt,V_MIN,V_MAX,a_max,v_step,δ_MIN,δ_MAX,δ_STEP,μ,g)
-
-        hrhc.v=v
-        hrhc.δ=δ
-        hrhc.v_idx = 1
-        hrhc.δ_idx = Int((size(hrhc.δ_cmds, 2) - 1)/2)
-        hrhc.curve_ind=1
-        hrhc.Δs=roadway.segments[1].lanes[1].curve[2].s-roadway.segments[1].lanes[1].curve[1].s
-        hrhc.action_context=context
-        hrhc.action = NextState(VehicleState(VecSE2(0,0,0),0.0))
-
-        hrhc
-    end
-end
-function MotionPrimitivesAcceleration(wheel_base,h,Δt,v_min,v_max,a_max,v_step,δ_min,δ_max,δ_step,μ,g)
-    """
-    Return a library of motion primitives (arcs of constant radius) representing short paths that the car can follow.
-    """
-    # 3D array to store motion_primitives
-    # radius = zeros(v_steps,2*δ_steps+1) # v: 0,...,99; δ: -45:45, (arc length, +/- radius)
-
-    v = linspace(v_min,v_max,round(v_max/v_step))*ones(1,2*Int(round((δ_max)/δ_step))+1) # velocity
-    δ = (linspace(-δ_max,δ_max,2*round((δ_max)/δ_step)+1)*ones(1,Int(round(v_max/v_step))))' # steering angle
-
-    radius = wheel_base./sin(δ) # radius of curvature (+ or -)
-    radius[:,Int(round((δ_max)/δ_step))+1] = Inf; # radius of curvature is infinite if steering angle = 0
-
-    n_actions = 3 # slow down, stay, speed up
-    destination_primitives = zeros(size(v,1),size(v,2),n_actions,h,3)
-
-    accels = [-a_max,0,a_max]
-    for j in 1:3
-        v₀ = copy(v)
-        a = accels[j]
-        for i = 1:h
-            vᵢ = max(v₀+a*i*Δt, 0.0) # velocity at end of time step
-            tire_force = sqrt((((vᵢ).^2)./abs(radius)).^2 + a^2) # tire force must be less than μ*g
-            v_threshold = ones(size(v,1),1)*maximum(vᵢ.*(tire_force .< μ*g), 1)
-            vᵢ = min(vᵢ,v_threshold)
-            Δs = max((v₀+vᵢ)/2.0, 0.0)*i*Δt
-
-            Δθ = Δs./radius # change in heading
-            if j == 3 # accel = -1
-                v₀[1:end-i,:] = v[i+1:end,:] # increase v₀ by one step for next round
-            elseif j == 1 # accel = +1
-                v₀[i+1:end,:] = v[1:end-i,:] # increase v₀ by one step for next round
-            end
-            # dX = abs(radius) * sin(angle)
-            destination_primitives[:,:,j,i,1] = abs(radius) .* sin(abs(Δθ))
-            destination_primitives[:,Int(round((δ_max)/δ_step))+1,j,i,1] = Δs[:,Int(round((δ_max)/δ_step))+1] # centerline
-
-            # dY = radius * (1 - cos(angle))
-            destination_primitives[:,:,j,i,2] = radius.*(1 - cos(Δθ))
-            destination_primitives[:,Int(round((δ_max)/δ_step))+1,j,i,2] = 0 # centerline
-
-            destination_primitives[:,:,j,i,3] = Δθ
-        end
-    end
-
-    tire_force = sqrt((((v).^2)./abs(radius)).^2) # tire force must be less than μ*g
-    mask = (tire_force .< μ*g)
-    v_threshold = ones(size(v,1),1)*maximum(v.*mask, 1)
-    v = min(v,v_threshold)
-    motion_map = Dict()
-    for i in 1:size(v,1) # motion_map[i] contains the reachable states from v[i]
-        motion_map[i] = destination_primitives[i,:,:,:,:]
-    end
-
-    return v, δ, destination_primitives, motion_map, mask
-end
-function getSuccessorStates!(hrhc::accelHRHC, scene::Scene)
-    """ gets legal successor_states from motion primitives library """
-    pos = scene.vehicles[hrhc.car_ID].state.posG # global x,y,z of car
-
-    ΔX = hrhc.ΔXYθ[hrhc.v_idx][:,:,hrhc.h,1] * cos(pos.θ) + hrhc.ΔXYθ[hrhc.v_idx][:,:,hrhc.h,2] * -sin(pos.θ)
-    ΔY = hrhc.ΔXYθ[hrhc.v_idx][:,:,hrhc.h,1] * sin(pos.θ) + hrhc.ΔXYθ[hrhc.v_idx][:,:,hrhc.h,2] * cos(pos.θ)
-    Δθ = hrhc.ΔXYθ[hrhc.v_idx][:,:,hrhc.h,3]
-
-    hrhc.successor_states = zeros(size(hrhc.ΔXYθ[hrhc.v_idx][:,:,hrhc.h,:]))
-    hrhc.successor_states[:,:,1] = ΔX + pos.x
-    hrhc.successor_states[:,:,2] = ΔY + pos.y
-    hrhc.successor_states[:,:,3] = Δθ + pos.θ
-
-    return
-end
-function computeTrajectory(hrhc::accelHRHC, scene, v_cmd, δ_cmd; h=hrhc.h)
-    pos = scene.vehicles[hrhc.car_ID].state.posG
-
-    traj_ΔXYθ = hrhc.ΔXYθ[hrhc.v_idx][δ_cmd,v_cmd,1:h,:]
-
-    ΔX = traj_ΔXYθ[:,1] * cos(pos.θ) + traj_ΔXYθ[:,2] * -sin(pos.θ)
-    ΔY = traj_ΔXYθ[:,1] * sin(pos.θ) + traj_ΔXYθ[:,2] * cos(pos.θ)
-    Δθ = traj_ΔXYθ[:,3]
-
-    trajectory = zeros(size(traj_ΔXYθ,1),size(traj_ΔXYθ,2)+2)
-    trajectory[:,1] = ΔX + pos.x
-    trajectory[:,2] = ΔY + pos.y
-    trajectory[:,3] = Δθ + pos.θ
-    trajectory[:,4] = hrhc.v_cmds[v_cmd,δ_cmd]
-    trajectory[:,5] = hrhc.δ_cmds[v_cmd,δ_cmd]
-
-    return trajectory
-end
-function AutomotiveDrivingModels.observe!(hrhc::accelHRHC, scene::Scene, roadway::Roadway, egoid::Int, tree::KDTree, obstacleMap, k_level)
-    """
-    Observe the current environment and select optimal action to apply at next
-    time step
-    """
-    if k_level > hrhc.k
-        return
-    end
-    state = scene.vehicles[hrhc.car_ID].state
-    hrhc.curve_ind = state.posF.roadind.ind.i
-    v = state.v # current v
-    hrhc.v = v
-
-    trajectory = zeros(hrhc.h,5)
-    action_selected = false
-    abs_cmd = (hrhc.v_idx,hrhc.δ_idx)
-    v_cmd = hrhc.v_idx
-    δ_cmd = hrhc.δ_idx
-
-    i = 0
-    for i in 0:(hrhc.h-1)
-        if action_selected
-            break # out of for loop
-        end
-
-        # calculate successor states
-        getSuccessorStates!(hrhc, scene)
-
-        # project successor states onto track
-        s,t,ϕ = loopProjectionKD(hrhc, scene, roadway, tree)
-
-        # optimization objective
-        objective = calculateObjective2(hrhc.car_ID, scene.vehicles[hrhc.car_ID].state.posF.s,
-        s, t, ϕ, hrhc.T_MAX)
-
-        while (action_selected==false) && (minimum(objective) != Inf)
-            index = indmin(objective) # find get a better method of optimizing this
-            δ_cmd, v_cmd = ind2sub(s, index)
-
-            # compute full trajectory up to horizon
-            trajectory = computeTrajectory(hrhc, scene, v_cmd,δ_cmd, h=hrhc.h-i)
-
-            # screen trajectory for collisions / validity
-            out_of_bounds = screenTrajectory(trajectory, obstacleMap, scene, roadway, hrhc, tree, k_level)
-
-            if out_of_bounds
-                objective[index] = Inf
-            else
-                action_selected=true
-                updateObstacleMap!(obstacleMap, k_level, hrhc.car_ID, trajectory)
-            end
-        end
-    end
-
-    hrhc.δ_idx = δ_cmd
-    hrhc.v_idx = min(max(1,hrhc.v_idx+v_cmd-2), size(hrhc.v,1))
-
-    hrhc.δ = hrhc.δ_cmds[hrhc.v_idx, δ_cmd] # next δ
-    hrhc.v = hrhc.v_cmds[hrhc.v_idx, δ_cmd] # next v
-
-    next_state = VehicleState(VecSE2(trajectory[1,1:3]),roadway,hrhc.v)
-    hrhc.action = NextState(next_state) # action
-end
-AutomotiveDrivingModels.get_name(::accelHRHC) = "accelHRHC"
-AutomotiveDrivingModels.action_context(driver::accelHRHC) = driver.action_context # AutomotiveDrivingModels.action_context
-Base.rand(hrhc::accelHRHC) = hrhc.action
-
-type mapHRHC <: DriverModel{NextState, IntegratedContinuous}
+# type Hierarchical Receding Horizion Controller
+type HRHC <: DriverModel{NextState, IntegratedContinuous}
     action_context::IntegratedContinuous
     car_ID::Int
     v_map
@@ -812,6 +86,9 @@ type mapHRHC <: DriverModel{NextState, IntegratedContinuous}
     car_length::Float64 # wheel base
     wheel_base::Float64
     car_width::Float64
+    ellipseA::Float64
+    ellipseB::Float64
+
     a_step::Float64 # max acceleration (m/s)
     μ::Float64 # friction coefficient
     v_range # possible velocityies
@@ -831,7 +108,7 @@ type mapHRHC <: DriverModel{NextState, IntegratedContinuous}
     T_MAX::Float64
     # Action = Next State
     action::NextState
-    function mapHRHC(car_ID::Int,roadway,context;
+    function HRHC(car_ID::Int,roadway,context;
         car_length::Float64=4.8,
         wheel_base::Float64=4.4,
         car_width::Float64=2.5,
@@ -868,7 +145,7 @@ type mapHRHC <: DriverModel{NextState, IntegratedContinuous}
 
         hrhc.k=k
 
-        hrhc.motion_map, hrhc.v_map, hrhc.δ_map, hrhc.v_range, hrhc.δ_range = GenerateMotionMap(v_min,
+        hrhc.motion_map, hrhc.v_map, hrhc.δ_map, hrhc.v_range, hrhc.δ_range = generateMotionMap(v_min,
             v_max,a_step,δ_max,δ_step,wheel_base,h,μ,Δt,a_range=a_range)
 
         hrhc.successor_states = zeros(size(hrhc.motion_map[1],1),size(hrhc.motion_map[1],2),3)
@@ -882,10 +159,42 @@ type mapHRHC <: DriverModel{NextState, IntegratedContinuous}
         hrhc.action_context=context
         hrhc.action = NextState(VehicleState(VecSE2(0,0,0),0.0))
 
+        # calculate semimajor axes of bounding ellipse with minimal area (for collision checking)
+        W = car_width/2.0
+        L = car_length/2.0
+
+        # use quadratic formula to find B^2
+        a = 2
+        b = -4*L - (W^2)*2*(L^2)
+        c = 2*L^4
+
+        B = sqrt((-b + sqrt(b^2 - 4*a*c))/(2*a))
+        A = sqrt(((W)^2) / (1 - (L/(B))^2))
+
+        hrhc.ellipseA = A
+        hrhc.ellipseB = B
+
         hrhc
     end
 end
-function GenerateMotionMap(v_min,v_max,a_step,δ_max,δ_step,wheel_base,h,μ,Δt;g=9.81,a_range=[-1,0,1])
+function generateObstacleMap(scene, models)
+    k = maximum([driver.k for (id, driver) in models])
+    n = length(scene)
+    h = maximum([driver.h for (id, driver) in models]) # h should be the same for all vehicles on the track
+    obstacleDict = Dict()
+    for level in 0:k
+        obstacleDict[level] = Dict()
+        for (id, driver) in models
+            obstacleDict[level][id] = zeros(h,5) # x,y,θ,v,δ
+        end
+    end
+
+    return obstacleDict
+end
+function updateObstacleMap!(obstacleMap, level, car_ID, trajectory)
+    obstacleMap[level][car_ID][1:size(trajectory,1),1:size(trajectory,2)] = trajectory
+end
+function generateMotionMap(v_min,v_max,a_step,δ_max,δ_step,wheel_base,h,μ,Δt;g=9.81,a_range=[-1,0,1])
 
     v_step = a_step*Δt
     v_range = linspace(v_min,v_max,round(v_max/v_step))
@@ -958,6 +267,125 @@ function GenerateMotionMap(v_min,v_max,a_step,δ_max,δ_step,wheel_base,h,μ,Δt
     end
     return motion_map, v_map, δ_map, v_range, δ_range
 end
+function loopProjectionKD(hrhc,scene,roadway,tree)
+    """
+    projects all points in hrhc.successor_states to the kdtree representing
+    the spline points along the centerline of roadway
+    """
+    curve = roadway.segments[1].lanes[1].curve
+
+    s_grid = zeros(size(hrhc.successor_states,1),size(hrhc.successor_states,2))
+    t_grid = zeros(size(s_grid))
+    ϕ_grid = zeros(size(s_grid))
+    idx_grid = zeros(Int,size(s_grid))
+
+    pts = [reshape(hrhc.successor_states[:,:,1],size(hrhc.successor_states[:,:,1],1)*size(hrhc.successor_states[:,:,1],2),1)';
+    reshape(hrhc.successor_states[:,:,2],size(hrhc.successor_states[:,:,2],1)*size(hrhc.successor_states[:,:,2],2),1)']
+    idxs_list, _ = knn(tree,pts,1)
+    idxs=reshape(idxs_list,size(hrhc.successor_states[:,:,2],1),size(hrhc.successor_states[:,:,2],2))
+
+
+    for i in 1:size(s_grid,1)
+        for j in 1:size(s_grid,2)
+            idxA = idxs[i,j][1]-1
+            idxB = idxs[i,j][1]+1
+            if idxs[i,j][1] == length(curve)
+                idxB = 1 # wrap to the beginning of the curve
+            end
+            if idxs[i,j][1] == 1
+                idxA = length(curve) # wrap to the end of the curve
+            end
+            x = hrhc.successor_states[i,j,1]
+            y = hrhc.successor_states[i,j,2]
+            dA = sqrt(sum(([curve[idxA].pos.x, curve[idxA].pos.y]-[x,y]).^2))
+            dB = sqrt(sum(([curve[idxB].pos.x, curve[idxB].pos.y]-[x,y]).^2))
+            if dA < dB
+                idxB = idxs[i,j][1]
+            else
+                idxA = idxs[i,j][1]
+            end
+
+            # project
+            vec1 = [curve[idxB].pos.x - curve[idxA].pos.x, curve[idxB].pos.y - curve[idxA].pos.y, 0]
+            vec2 = [x - curve[idxA].pos.x, y - curve[idxA].pos.y, 0]
+            idx_t = dot(vec2, vec1)/norm(vec1)^2
+
+            s_θ = curve[idxA].pos.θ + idx_t*(curve[idxB].pos.θ - curve[idxA].pos.θ)
+
+            s_grid[i,j] = curve[idxA].s + idx_t*hrhc.Δs
+            t_grid[i,j] = norm(vec2 - idx_t*vec1)*sign(sum(cross(vec1, vec2)))
+            ϕ_grid[i,j] = wrap_to_π(hrhc.successor_states[i,j,3] - s_θ)
+            idx_grid[i,j] = idxA
+        end
+    end
+    # account for wrap-around
+    s_grid[s_grid .< scene.vehicles[hrhc.car_ID].state.posF.s] += curve[end].s + hrhc.Δs
+
+    return s_grid, t_grid, ϕ_grid
+end
+function screenTrajectory(trajectory, obstacleMap, scene, roadway, hrhc, tree, k_level)
+    out_of_bounds = false
+    collision_flag = false
+    # check out of bounds
+    for i in 1 : size(trajectory,1)
+        x = trajectory[i,1]
+        y = trajectory[i,2]
+        θ = trajectory[i,3]
+        s,t,ϕ = kdProject(x,y,θ,tree,roadway,hrhc)
+
+        if abs(t) > hrhc.T_MAX
+            out_of_bounds=true
+            return out_of_bounds
+        end
+    end
+
+    # collisionFlag = zeros(size(trajectory,1),1) # stores locations collisions
+    threshold_dist = hrhc.car_length*4 # must be at least this close before we care to calculate collision cost
+
+    # if k_level >= 1
+    #     # for all other cars...
+    #     for (id,traj) in obstacleMap[k_level - 1]
+    #         if id != hrhc.car_ID
+    #             state = scene.vehicles[hrhc.car_ID].state
+    #             state2 = scene.vehicles[id].state
+    #             diff = state.posG - state2.posG
+    #             s1,_,_ = kdProject(state.posG.x,state.posG.y,state.posG.θ,tree,roadway,hrhc)
+    #             s2,_,_ = kdProject(state2.posG.x,state2.posG.y,state2.posG.θ,tree,roadway,hrhc)
+    #             if (norm([diff.x, diff.y]) < threshold_dist) && (s1 <= s2) # don't care if opponent is behind us
+    #                 # R_idx = zeros(Int, size(trajectory,1),1) # to store the sorted indices of R
+    #                 # ΔX = zeros(size(trajectory,1),1) # Δx, with opponent at origin
+    #                 # ΔY = zeros(size(trajectory,1),1) # Δx, with opponent at origin
+    #                 # Δθ = zeros(size(trajectory,1),1) # Δx, with opponent at origin
+    #                 # for i in 1:hrhc.h
+    #                     # pos = VecSE2(traj[i,1:3]) # x,y,θ of opponent at time step h
+    #                 ΔX = trajectory[:,1] - traj[:,1] # Δx, with opponent at origin
+    #                 ΔY = trajectory[:,2] - traj[:,2] # Δy with opponent at origin
+    #                 Δθ = trajectory[:,3] - traj[:,3]  # Δθ with opponent at origin
+    #                 # end
+    #                 R = sqrt(ΔX.^2 + ΔY.^2)
+    #                 R_idx = sortperm(R) # ordered by increasing distance
+    #                 for idx in R_idx
+    #                     # if collisionFlag[idx] == 1
+    #                     #     continue
+    #                     # end
+    #                     if R[idx] > hrhc.car_length # no collision, and all other R values are greater
+    #                         break
+    #                     end
+    #                     # R is less than hrhc.car_length
+    #                     ψ = atan2(ΔY[idx],ΔX[idx]) - Δθ[idx]
+    #                     r = W*L/sqrt((L*sin(ψ))^2 + (W*cos(ψ))^2) # radius of ellipse at given angle
+    #                     if R[idx]-r < W*L/8 # collision
+    #                         collision_flag = true
+    #                         return collision_flag
+    #                     end
+    #                 end
+    #             end
+    #         end
+    #     end
+    # end
+
+    return out_of_bounds || collision_flag
+end
 function getSuccessorStates(ΔXYθ, car_ID, h, scene::Scene)
     """ gets legal successor_states from motion primitives library """
     pos = scene.vehicles[car_ID].state.posG # global x,y,z of car
@@ -983,9 +411,21 @@ function computeTrajectory(ΔXYθ, car_ID, scene, v_cmd, δ_cmd, h)
 
     return trajectory
 end
+function checkCollisionElliptic(R,Δx,Δy,Δθ,L,W)
+    b = W # buffer
+    ζ = atan2(Δy,Δx)
+    ψ = ζ - Δθ
+    r1 = W*L/sqrt((L*sin(ζ))^2 + (W*cos(ζ))^2) # radius of ellipse at given angle
+    r2 = W*L/sqrt((L*sin(ψ))^2 + (W*cos(ψ))^2)
+    if R < r1 + r2 + b
+        return true
+    else
+        return false
+    end
+end
 function screenCollision(hrhc, obstacleMap, tree, roadway, scene, k_level)
-    L = hrhc.car_length + 2.5
-    W = hrhc.car_width
+    L = hrhc.ellipseB+2
+    W = hrhc.ellipseA+2
 
     collisionFlag = zeros(size(hrhc.successor_states[:,:,1])) # stores locations collisions
     threshold_dist = hrhc.car_length*4 # must be at least this close before we care to calculate collision cost
@@ -1017,11 +457,14 @@ function screenCollision(hrhc, obstacleMap, tree, roadway, scene, k_level)
                                 break
                             end
                             # R is less than hrhc.car_length
-                            ψ = atan2(ΔY[idx],ΔX[idx]) - Δθ[idx]
-                            r = W*L/sqrt((L*sin(ψ))^2 + (W*cos(ψ))^2) # radius of ellipse at given angle
-                            if R[idx]-r < W*L/8 # collision
+                            if checkCollisionElliptic(R[idx],ΔX[idx],ΔY[idx],Δθ[idx],L,W)
                                 collisionFlag[idx] = 1
                             end
+                            # ψ = atan2(ΔY[idx],ΔX[idx]) - Δθ[idx]
+                            # r = W*L/sqrt((L*sin(ψ))^2 + (W*cos(ψ))^2) # radius of ellipse at given angle
+                            # if R[idx]-r < W*L/8 # collision
+                            #     collisionFlag[idx] = 1
+                            # end
                         end
                     end
                 end
@@ -1030,7 +473,7 @@ function screenCollision(hrhc, obstacleMap, tree, roadway, scene, k_level)
     end
     return collisionFlag
 end
-function TailgateAvoidance(hrhc, obstacleMap, tree, roadway, scene, k_level)
+function tailgateAvoidance(hrhc, obstacleMap, tree, roadway, scene, k_level)
     L = 2*hrhc.car_length
     W = hrhc.car_width
 
@@ -1084,7 +527,7 @@ function calculateObjective(car_ID,s₀,s,t,ϕ,T_MAX;ϕ_MAX=Float64(π),s_factor
     objective = 1+s_cost+t_cost+ϕ_cost+tϕ_cost
     return objective
 end
-function AutomotiveDrivingModels.observe!(hrhc::mapHRHC, scene::Scene, roadway::Roadway, egoid::Int, tree::KDTree, obstacleMap, k_level)
+function AutomotiveDrivingModels.observe!(hrhc::HRHC, scene::Scene, roadway::Roadway, egoid::Int, tree::KDTree, obstacleMap, k_level)
     """
     Observe the current environment and select optimal action to apply at next
     time step
@@ -1111,7 +554,7 @@ function AutomotiveDrivingModels.observe!(hrhc::mapHRHC, scene::Scene, roadway::
         # optimization objective
         objective = calculateObjective(hrhc.car_ID, scene.vehicles[hrhc.car_ID].state.posF.s,
         s, t, ϕ, hrhc.T_MAX)
-        tailgateCost = TailgateAvoidance(hrhc, obstacleMap, tree, roadway, scene, k_level)
+        tailgateCost = tailgateAvoidance(hrhc, obstacleMap, tree, roadway, scene, k_level)
         objective = objective + tailgateCost
         collisionFlag = screenCollision(hrhc, obstacleMap, tree, roadway, scene, k_level)
         objective[collisionFlag .> 0] = Inf
@@ -1146,10 +589,11 @@ function AutomotiveDrivingModels.observe!(hrhc::mapHRHC, scene::Scene, roadway::
     next_state = VehicleState(VecSE2(trajectory[1,1:3]),roadway,hrhc.v)
     hrhc.action = NextState(next_state) # action
 end
-AutomotiveDrivingModels.get_name(::mapHRHC) = "mapHRHC"
-AutomotiveDrivingModels.action_context(driver::mapHRHC) = driver.action_context # AutomotiveDrivingModels.action_context
-Base.rand(hrhc::mapHRHC) = hrhc.action
+AutomotiveDrivingModels.get_name(::HRHC) = "HRHC"
+AutomotiveDrivingModels.action_context(driver::HRHC) = driver.action_context # AutomotiveDrivingModels.action_context
+Base.rand(hrhc::HRHC) = hrhc.action
 
+# Plotting functions
 function plotSplineRoadway(x,y,θ,lane_width)
     perp_lines1 = zeros(2,length(x))
     perp_lines2 = zeros(2,length(x))
@@ -1306,5 +750,3 @@ function plotHRHCInfo(hrhc,models,scene,roadway,trajectory,cmd,x,y,Θ,s,t,ϕ,obj
     PyPlot.axis("off")
     PyPlot.title("Log Objective Function")
 end
-
-end # module

@@ -1,15 +1,15 @@
-module SplineUtils
-using AutomotiveDrivingModels
-using NearestNeighbors
+# module SplineUtils
+# using AutomotiveDrivingModels
+# using NearestNeighbors
+#
+# import PyPlot
 
-import PyPlot
-
-export
-    ClosedB_Spline,
-    B_SplineDerivative,
-    ResampleSplineEven,
-    GenSplineRoadway,
-    PlotSplineRoadway
+# export
+#     ClosedB_Spline,
+#     B_SplineDerivative,
+#     ResampleSplineEven,
+#     GenSplineRoadway,
+#     PlotSplineRoadway
 
 
 """
@@ -210,4 +210,4 @@ function PlotSplineRoadway(x,y,θ,lane_width)
     PyPlot.show()
 end
 
-end # module
+# end # module

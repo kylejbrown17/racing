@@ -1,10 +1,10 @@
-module SplineRaceWay
+# module SplineRaceWay
 
-using AutomotiveDrivingModels
-using NearestNeighbors
-using SplineUtils
+# using AutomotiveDrivingModels
+# using NearestNeighbors
+# using SplineUtils
 
-export Raceway
+# export Raceway
 
 type Raceway
     roadway::AutomotiveDrivingModels.Roadway
@@ -42,4 +42,4 @@ type Raceway
     end
 end # type
 
-end # module
+# end # module
